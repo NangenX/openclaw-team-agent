@@ -1,16 +1,17 @@
 # openclaw-team-agent
 
-一个 [OpenClaw Skill](https://docs.openclaw.ai/)，为你的项目安装 6-Agent AI 开发团队。
+一个 [OpenClaw Skill](https://docs.openclaw.ai/)，为你的项目安装 10-Agent AI 开发团队。
 
-**版本：v0.4**
+**版本：v0.5**
 
 ## 特性
 
 - **完全自包含** — 所有 Agent 提示词已内嵌在 `SKILL.md` 中，安装时无需外部路径依赖
-- **6 个专业 Agent** — Product Planner、Orchestration、Architecture、Implementation、QA、Documentation
+- **10 个专业 Agent** — Product Planner、Orchestration、Architecture、Implementation、QA（通用 + 4 个专项）、Documentation
 - **可执行的 system prompt** — 每个 Agent 有明确的人格、行为准则和工作流程
 - **任务编排运行层** — 附带轻量级 Python CLI，支持线性与 DAG 两种多 Agent 流程
-- **QA 门禁强制执行** — `documentation` 阶段在 `qa` 完成前无法推进
+- **动态 QA 委员会** — Orchestration 根据变更规模和涉及领域自主选择 1–5 个 QA Agent 并行审查
+- **QA 门禁强制执行** — 所有选中的 QA Agent 全部通过后，`documentation` 阶段才可推进
 - **自动创建 PR** — `create-pr` 命令在门禁通过后通过 GitHub CLI 自动发起 Pull Request
 - **截止时间与超时追踪** — `set-deadline` 与 `check-timeout` 命令支持时间感知工作流
 - **智能重试** — `retry` 命令在重置失败阶段的同时保留任务描述和日志
@@ -145,10 +146,14 @@ product-planner -> orchestration -> architecture -> implementation -> qa -> docu
 | Agent | 核心职责 |
 |-------|---------|
 | Product Planner | 需求分析与任务切片 |
-| Orchestration | 任务路由与执行编排 |
+| Orchestration | 任务路由、执行编排、QA 委员会决策 |
 | Architecture | 架构设计与技术决策 |
 | Implementation | 代码实现与自测 |
-| QA | 质量验证与代码审查 |
+| QA | 通用质量验证与代码审查 |
+| QA-Security | 安全漏洞、权限、加密审查 |
+| QA-Style | 代码风格、规范、可维护性审查 |
+| QA-Performance | 性能瓶颈、内存、算法审查 |
+| QA-Logic | 业务逻辑、边界条件审查 |
 | Documentation | 文档维护与双语一致性 |
 
 ## 开发流程
@@ -158,18 +163,29 @@ product-planner -> orchestration -> architecture -> implementation -> qa -> docu
     ↓
 Product Planner  → 需求卡片 (REQ-XXX)
     ↓
-Orchestration    → 执行路由计划 (PLAN-XXX)
+Orchestration    → 执行路由计划 (PLAN-XXX) + QA 委员会决策
     ↓
 Architecture     → ADR + 接口契约
     ↓
 Implementation   → 代码 + 自测报告
     ↓
-QA               → 测试报告 (pass/block)
+QA 委员会（动态） → 并行：qa + qa-logic + qa-security + qa-performance + qa-style
+                   （Orchestration 根据变更规模和领域自主选择）
     ↓
 Documentation    → 文档更新
     ↓
 交付
 ```
+
+### QA 委员会决策规则
+
+| 变更规模 | 判断依据 | 基础 QA 配置 |
+|---------|---------|------------|
+| 小 | 改动 ≤3 个文件，逻辑简单 | `qa` |
+| 中 | 改动 4–10 个文件，或含新功能 | `qa` + `qa-logic` |
+| 大/复杂 | 改动 >10 个文件，或跨模块重构 | `qa` + `qa-logic` + `qa-style` |
+| + 安全相关 | 含认证/加密/权限/敏感数据 | + `qa-security` |
+| + 性能相关 | 含热路径/数据库/并发 | + `qa-performance` |
 
 ## 项目结构
 
@@ -184,6 +200,10 @@ openclaw-team-agent/
 │   ├── architecture.md
 │   ├── implementation.md
 │   ├── qa.md
+│   ├── qa-security.md
+│   ├── qa-style.md
+│   ├── qa-performance.md
+│   ├── qa-logic.md
 │   └── documentation.md
 ├── scripts/               # 工作流运行层
 │   ├── task_manager.py
@@ -202,3 +222,4 @@ openclaw-team-agent/
 - v0.2: 增补场景化流程（需求到发布）
 - v0.3: 引入自动化校验脚本（可选）
 - v0.4: QA 门禁强制执行、自动创建 PR、截止时间追踪、智能重试、术语表扩充、示例项目
+- v0.5: 动态 QA 委员会 — Orchestration 自主决定专项 QA 阵容（qa-security、qa-style、qa-performance、qa-logic）
