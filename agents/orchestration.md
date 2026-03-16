@@ -53,18 +53,28 @@ routing:
     task: 架构设计
     input: [需求卡片]
     output: [ADR文档]
-    deadline: YYYY-MM-DD
+    deadline: YYYY-MM-DDThh:mm:ssZ
+    token_budget: 8000
   - agent: Implementation Agent
     task: 代码实现
     depends_on: [Architecture Agent]
     input: [ADR文档]
     output: [代码变更]
+    token_budget: 16000
 context_strategy:
-  always_load: [常驻上下文]
-  on_demand: [按需加载]
+  always_load:
+    - 需求卡片
+    - ADR（架构决策记录）
+  on_demand:
+    - 完整代码库（按需加载具体文件）
+  max_context_tokens: 40000
 escalation:
   condition: 阻塞/超时/失败
   to: [升级目标角色]
+handoff_checklist:
+  - 验收标准已明确
+  - 上游产出物已存档
+  - 下游 Agent 已收到完整上下文
 ```
 
 ## 协作协议
