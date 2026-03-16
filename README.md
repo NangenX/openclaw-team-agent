@@ -7,10 +7,11 @@ An [OpenClaw Skill](https://docs.openclaw.ai/) that installs a 6-agent AI develo
 ## Features
 
 - **Self-contained skill** — all agent prompts are embedded in `SKILL.md`, no external path dependencies
-- **6 specialized agents** — Product Planner, Orchestration, Architecture, Implementation, QA, Documentation
+- **10 specialized agents** — Product Planner, Orchestration, Architecture, Implementation, QA (general + 4 specialist), Documentation
 - **Executable system prompts** — each agent has a clear persona, behavioral rules, and workflow steps
 - **Task manager runtime** — a lightweight Python CLI supports both linear and DAG multi-agent workflows
-- **QA gate enforcement** — `documentation` stage is blocked until `qa` is marked done
+- **Dynamic QA committee** — Orchestration autonomously selects 1–5 QA agents based on change size and domain
+- **QA gate enforcement** — `documentation` stage is blocked until all selected QA agents pass
 - **Automatic PR creation** — `create-pr` command generates a PR via GitHub CLI after gate passes
 - **Deadline & timeout tracking** — `set-deadline` and `check-timeout` commands for time-aware workflows
 - **Smart retry** — `retry` command resets failed stages while preserving task context and logs
@@ -145,10 +146,14 @@ Feishu inbound leader commands:
 | Agent | Role |
 |-------|------|
 | Product Planner | Requirement analysis and task slicing |
-| Orchestration | Task routing and execution scheduling |
+| Orchestration | Task routing, execution scheduling, and QA committee decisions |
 | Architecture | Architecture decisions and interface contracts |
 | Implementation | Code implementation and self-testing |
-| QA | Quality verification and code review |
+| QA | General quality verification and code review |
+| QA-Security | Security vulnerabilities, permissions, encryption |
+| QA-Style | Code style, conventions, maintainability |
+| QA-Performance | Performance bottlenecks, memory, algorithms |
+| QA-Logic | Business logic, boundary conditions |
 | Documentation | Documentation maintenance and bilingual consistency |
 
 ## Workflow
@@ -158,18 +163,29 @@ User requirement
     ↓
 Product Planner  → Requirement Card (REQ-XXX)
     ↓
-Orchestration    → Routing Plan (PLAN-XXX)
+Orchestration    → Routing Plan (PLAN-XXX) + QA Committee Decision
     ↓
 Architecture     → ADR + Interface Contract
     ↓
 Implementation   → Code + Self-test Report
     ↓
-QA               → Test Report (pass/block)
+QA Committee     → Parallel: qa + qa-logic + qa-security + qa-performance + qa-style
+(dynamic)          (Orchestration selects agents based on change size and domain)
     ↓
 Documentation    → Doc Update
     ↓
 Delivery
 ```
+
+### QA Committee Rules
+
+| Change Size | Criteria | QA Agents |
+|------------|----------|-----------|
+| Small | ≤3 files, simple logic | `qa` |
+| Medium | 4–10 files, or new feature/interface | `qa` + `qa-logic` |
+| Large/Complex | >10 files, cross-module, or refactor | `qa` + `qa-logic` + `qa-style` |
+| + Security | Auth/crypto/permissions involved | + `qa-security` |
+| + Performance | Hot paths/DB/concurrency involved | + `qa-performance` |
 
 ## Project Structure
 
@@ -183,6 +199,10 @@ openclaw-team-agent/
 │   ├── architecture.md
 │   ├── implementation.md
 │   ├── qa.md
+│   ├── qa-security.md
+│   ├── qa-style.md
+│   ├── qa-performance.md
+│   ├── qa-logic.md
 │   └── documentation.md
 ├── scripts/               # Workflow runtime
 │   ├── task_manager.py
@@ -201,3 +221,4 @@ openclaw-team-agent/
 - v0.2: Scenario playbooks (from requirement to release)
 - v0.3: Optional automated validation
 - v0.4: QA gate enforcement, auto PR creation, deadline/timeout tracking, smart retry, expanded glossary, example project
+- v0.5: Dynamic QA committee — Orchestration autonomously selects specialist QA agents (qa-security, qa-style, qa-performance, qa-logic) based on change size and domain
