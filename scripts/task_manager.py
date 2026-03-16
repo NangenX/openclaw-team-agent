@@ -21,6 +21,8 @@ DEFAULT_PIPELINE = [
 ]
 VALID_STATUSES = {"pending", "in-progress", "done", "failed", "skipped"}
 DELIVERY_GATE_STAGES = ["qa", "documentation"]
+# Stages that must have qa done before they can be advanced to in-progress or done
+QA_REQUIRED_BEFORE = {"documentation"}
 
 
 def utc_now() -> str:
@@ -50,6 +52,8 @@ def ensure_stage_defaults(stage: dict[str, Any]) -> None:
     stage.setdefault("logs", [])
     stage.setdefault("history", [])
     stage.setdefault("updatedAt", utc_now())
+    stage.setdefault("deadline", None)
+    stage.setdefault("tokenBudget", None)
 
 
 def ensure_payload_defaults(payload: dict[str, Any]) -> None:
@@ -189,6 +193,13 @@ def delivery_gate(payload: dict[str, Any]) -> tuple[bool, list[str]]:
         if stage.get("status") != "done":
             blockers.append(f"{stage_id} not done (current: {stage.get('status', 'unknown')})")
     return len(blockers) == 0, blockers
+
+
+def qa_gate_satisfied(payload: dict[str, Any]) -> bool:
+    """Return True if the QA stage exists and is marked done."""
+    stages = stage_map(payload)
+    qa_stage = stages.get("qa")
+    return qa_stage is not None and qa_stage.get("status") == "done"
 
 
 def leader_report_message(payload: dict[str, Any], blockers: list[str]) -> str:
@@ -364,6 +375,15 @@ def cmd_update(args: argparse.Namespace) -> int:
     if payload.get("mode") == "dag" and args.status in {"in-progress", "done"}:
         if not deps_satisfied(payload, stage):
             raise SystemExit(f"cannot set {args.stage} to {args.status}: dependencies not satisfied")
+    # Enforce QA gate: stages listed in QA_REQUIRED_BEFORE cannot be advanced
+    # past pending unless qa is already done (use --skip-qa-gate only for emergencies)
+    if args.stage in QA_REQUIRED_BEFORE and args.status in {"in-progress", "done"}:
+        if not getattr(args, "skip_qa_gate", False) and not qa_gate_satisfied(payload):
+            raise SystemExit(
+                f"cannot advance '{args.stage}' to '{args.status}': "
+                "QA stage must be 'done' first. "
+                "Use --skip-qa-gate to override (emergency use only)."
+            )
     prev_status = stage["status"]
     stage["status"] = args.status
     stage["updatedAt"] = utc_now()
@@ -837,6 +857,8 @@ def cmd_add(args: argparse.Namespace) -> int:
         "logs": [],
         "history": [],
         "updatedAt": utc_now(),
+        "deadline": validate_iso8601(args.deadline) if getattr(args, "deadline", None) else None,
+        "tokenBudget": getattr(args, "token_budget", None),
     }
     payload["stages"].append(new_stage)
     if has_cycle(payload["stages"]):
@@ -986,6 +1008,191 @@ def cmd_leader_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_iso8601(value: str) -> str:
+    """Validate that value looks like an ISO-8601 datetime string and return it.
+
+    Accepts the subset used in this tool: YYYY-MM-DDThh:mm:ssZ or +offset.
+    Raises SystemExit with a helpful message if invalid.
+    """
+    import re
+
+    pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(Z|[+-]\d{2}:\d{2})$"
+    if not re.match(pattern, value):
+        raise SystemExit(
+            f"invalid deadline format: {value!r}. "
+            "Expected ISO-8601 datetime, e.g. 2026-03-20T18:00:00Z"
+        )
+    return value
+
+
+def cmd_set_deadline(args: argparse.Namespace) -> int:
+    """Set or clear the deadline for a stage."""
+    payload = load_project(args.project)
+    stages = stage_map(payload)
+    if args.stage not in stages:
+        raise SystemExit(f"unknown stage: {args.stage}")
+    stage = stages[args.stage]
+    deadline = validate_iso8601(args.deadline) if args.deadline else None
+    stage["deadline"] = deadline
+    stage["updatedAt"] = utc_now()
+    append_stage_history(stage, "deadline", f"deadline set to {deadline or 'none'}")
+    append_event(payload, "stage.deadline", f"{args.stage}: deadline={deadline or 'none'}", args.stage)
+    payload["updatedAt"] = utc_now()
+    save_project(args.project, payload)
+    print(f"deadline set for {args.stage}: {deadline or '(cleared)'}")
+    return 0
+
+
+def cmd_check_timeout(args: argparse.Namespace) -> int:
+    """Report stages whose deadlines have passed and are not yet done."""
+    payload = load_project(args.project)
+    now = utc_now()
+    overdue: list[dict[str, Any]] = []
+    for stage in payload.get("stages", []):
+        deadline = stage.get("deadline")
+        if not deadline:
+            continue
+        if is_done_like(stage.get("status", "")):
+            continue
+        if deadline < now:
+            overdue.append(
+                {
+                    "stage": stage["id"],
+                    "status": stage.get("status", "unknown"),
+                    "deadline": deadline,
+                    "agent": stage.get("agent", stage["id"]),
+                }
+            )
+
+    if args.json:
+        print(json.dumps({"project": payload.get("project", ""), "overdue": overdue}, ensure_ascii=False, indent=2))
+        return 0
+
+    if not overdue:
+        print("no overdue stages")
+        return 0
+    print(f"Overdue stages in '{payload.get('project', '')}':")
+    for item in overdue:
+        print(f"- {item['stage']} [{item['agent']}] status={item['status']} deadline={item['deadline']}")
+    return 0
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    """Reset a failed stage to pending while preserving its task description and logs."""
+    payload = load_project(args.project)
+    stages = stage_map(payload)
+    if args.stage not in stages:
+        raise SystemExit(f"unknown stage: {args.stage}")
+    stage = stages[args.stage]
+    current_status = stage.get("status", "unknown")
+    if current_status != "failed":
+        raise SystemExit(
+            f"cannot retry stage '{args.stage}': status is '{current_status}' (must be 'failed'). "
+            "Use 'reset' to reset stages with other statuses."
+        )
+    old_result = stage.get("result", "")
+    stage["status"] = "pending"
+    stage["result"] = ""
+    stage["updatedAt"] = utc_now()
+    append_stage_history(stage, "retry", f"failed -> pending (previous result preserved in log)")
+    if old_result:
+        stage.setdefault("logs", []).append({"at": utc_now(), "message": f"[retry] previous result: {old_result}"})
+    append_event(payload, "stage.retry", f"retrying stage {args.stage}", args.stage)
+    payload["updatedAt"] = utc_now()
+    recompute_project_status(payload)
+    save_project(args.project, payload)
+    print(f"retrying stage: {args.stage}")
+    return 0
+
+
+def _build_pr_body(payload: dict[str, Any]) -> str:
+    """Build a markdown PR body from project state."""
+    goal = payload.get("goal", "")
+    project = payload.get("project", "")
+    intake = payload.get("intake", {})
+    requester = intake.get("requester", "unknown")
+    source = intake.get("source", "manual")
+    lines = [
+        f"## {goal}",
+        "",
+        f"**Project**: `{project}`  ",
+        f"**Requester**: {requester}  ",
+        f"**Source**: {source}  ",
+        "",
+        "## Stages",
+        "",
+    ]
+    for stage in payload.get("stages", []):
+        status_icon = {
+            "done": "✅",
+            "skipped": "⏭️",
+            "failed": "❌",
+            "in-progress": "🔄",
+            "pending": "⬜",
+        }.get(stage.get("status", ""), "❓")
+        agent = stage.get("agent", stage["id"])
+        task = stage.get("task", "")
+        result = stage.get("result", "")
+        lines.append(f"- {status_icon} **{stage['id']}** ({agent})")
+        if task:
+            lines.append(f"  - Task: {task}")
+        if result:
+            lines.append(f"  - Result: {result}")
+    lines += ["", "---", "_Generated by OpenClaw task manager_"]
+    return "\n".join(lines)
+
+
+def cmd_create_pr(args: argparse.Namespace) -> int:
+    """Check delivery gate and create a GitHub PR via `gh pr create`."""
+    import shutil
+    import subprocess
+
+    payload = load_project(args.project)
+    ready, blockers = delivery_gate(payload)
+
+    if not ready and not getattr(args, "force", False):
+        print("Delivery gate is not satisfied. Fix the following before creating a PR:")
+        for item in blockers:
+            print(f"  - {item}")
+        print("\nRun with --force to create the PR anyway (not recommended).")
+        return 1
+
+    title = args.title or payload.get("goal") or f"[OpenClaw] {payload.get('project', '')}"
+    body = _build_pr_body(payload)
+
+    if args.dry_run:
+        print("=== PR Title ===")
+        print(title)
+        print("\n=== PR Body ===")
+        print(body)
+        print("\n=== Command (dry-run, body shown above) ===")
+        base = args.base or "main"
+        draft_flag = " --draft" if args.draft else ""
+        print(f"gh pr create --title {title!r} --body '...' --base {base}{draft_flag}")
+        return 0
+
+    if not shutil.which("gh"):
+        raise SystemExit(
+            "GitHub CLI (`gh`) not found. Install it from https://cli.github.com/ "
+            "or run with --dry-run to preview the PR."
+        )
+
+    cmd: list[str] = ["gh", "pr", "create", "--title", title, "--body", body]
+    if args.base:
+        cmd += ["--base", args.base]
+    if args.draft:
+        cmd.append("--draft")
+
+    result = subprocess.run(cmd, capture_output=False)  # noqa: S603
+    if result.returncode != 0:
+        raise SystemExit(f"gh pr create failed with exit code {result.returncode}")
+
+    append_event(payload, "project.pr_created", f"PR created: {title}")
+    payload["updatedAt"] = utc_now()
+    save_project(args.project, payload)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manage OpenClaw 6-agent workflows in linear or dag mode."
@@ -1013,6 +1220,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("-a", "--agent", required=True)
     add_parser.add_argument("-d", "--deps", help="Comma-separated dependency task IDs")
     add_parser.add_argument("--desc", "--description", dest="description")
+    add_parser.add_argument("--deadline", help="ISO-8601 deadline (e.g. 2026-03-20T18:00:00Z)")
+    add_parser.add_argument("--token-budget", dest="token_budget", type=int, help="Max tokens for this stage")
     add_parser.set_defaults(func=cmd_add)
 
     assign_parser = subparsers.add_parser("assign", help="Assign a task to a stage")
@@ -1025,6 +1234,11 @@ def build_parser() -> argparse.ArgumentParser:
     update_parser.add_argument("project")
     update_parser.add_argument("stage")
     update_parser.add_argument("status")
+    update_parser.add_argument(
+        "--skip-qa-gate",
+        action="store_true",
+        help="Override QA gate check (emergency use only)",
+    )
     update_parser.set_defaults(func=cmd_update)
 
     result_parser = subparsers.add_parser("result", help="Save stage output")
@@ -1117,6 +1331,31 @@ def build_parser() -> argparse.ArgumentParser:
     leader_report_parser.add_argument("--limit", type=int, default=10, help="Show last N events in report")
     leader_report_parser.add_argument("--json", action="store_true")
     leader_report_parser.set_defaults(func=cmd_leader_report)
+
+    set_deadline_parser = subparsers.add_parser("set-deadline", help="Set deadline for a stage")
+    set_deadline_parser.add_argument("project")
+    set_deadline_parser.add_argument("stage")
+    set_deadline_parser.add_argument("deadline", nargs="?", default=None, help="ISO-8601 datetime (omit to clear)")
+    set_deadline_parser.set_defaults(func=cmd_set_deadline)
+
+    check_timeout_parser = subparsers.add_parser("check-timeout", help="Report overdue stages")
+    check_timeout_parser.add_argument("project")
+    check_timeout_parser.add_argument("--json", action="store_true")
+    check_timeout_parser.set_defaults(func=cmd_check_timeout)
+
+    retry_parser = subparsers.add_parser("retry", help="Retry a failed stage (keeps task + logs)")
+    retry_parser.add_argument("project")
+    retry_parser.add_argument("stage")
+    retry_parser.set_defaults(func=cmd_retry)
+
+    create_pr_parser = subparsers.add_parser("create-pr", help="Create a GitHub PR after delivery gate passes")
+    create_pr_parser.add_argument("project")
+    create_pr_parser.add_argument("--title", default="", help="PR title (defaults to project goal)")
+    create_pr_parser.add_argument("--base", default="", help="Base branch (default: main)")
+    create_pr_parser.add_argument("--draft", action="store_true", help="Create as draft PR")
+    create_pr_parser.add_argument("--force", action="store_true", help="Create PR even if gate is not satisfied")
+    create_pr_parser.add_argument("--dry-run", action="store_true", help="Preview PR without creating it")
+    create_pr_parser.set_defaults(func=cmd_create_pr)
 
     return parser
 

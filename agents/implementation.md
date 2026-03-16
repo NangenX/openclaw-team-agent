@@ -64,6 +64,14 @@ breaking_changes:
   - 破坏性变更说明
 dependencies:
   - 依赖项1
+handoff_context:
+  summary: 本次变更的一句话摘要
+  key_decisions:
+    - 重要技术决策1
+  qa_focus_areas:
+    - 需要 QA 重点验证的区域1
+  environment_setup:
+    - 运行/测试所需的环境步骤1
 ```
 
 ## 协作协议

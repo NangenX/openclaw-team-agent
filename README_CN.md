@@ -2,12 +2,18 @@
 
 一个 [OpenClaw Skill](https://docs.openclaw.ai/)，为你的项目安装 6-Agent AI 开发团队。
 
+**版本：v0.4**
+
 ## 特性
 
 - **完全自包含** — 所有 Agent 提示词已内嵌在 `SKILL.md` 中，安装时无需外部路径依赖
 - **6 个专业 Agent** — Product Planner、Orchestration、Architecture、Implementation、QA、Documentation
 - **可执行的 system prompt** — 每个 Agent 有明确的人格、行为准则和工作流程
 - **任务编排运行层** — 附带轻量级 Python CLI，支持线性与 DAG 两种多 Agent 流程
+- **QA 门禁强制执行** — `documentation` 阶段在 `qa` 完成前无法推进
+- **自动创建 PR** — `create-pr` 命令在门禁通过后通过 GitHub CLI 自动发起 Pull Request
+- **截止时间与超时追踪** — `set-deadline` 与 `check-timeout` 命令支持时间感知工作流
+- **智能重试** — `retry` 命令在重置失败阶段的同时保留任务描述和日志
 - **双语支持** — 中英文文档一致性保障
 
 ## 安装
@@ -39,7 +45,7 @@ python3 scripts/task_manager.py status my-feature
 # DAG 模式
 python3 scripts/task_manager.py init my-feature-dag -m dag -g "Build login flow"
 python3 scripts/task_manager.py add my-feature-dag spec -a product-planner --desc "Write requirement card"
-python3 scripts/task_manager.py add my-feature-dag impl -a implementation -d spec --desc "Implement feature"
+python3 scripts/task_manager.py add my-feature-dag impl -a implementation -d spec --desc "Implement feature" --deadline "2026-03-20T18:00:00Z" --token-budget 16000
 python3 scripts/task_manager.py ready my-feature-dag --json
 python3 scripts/task_manager.py graph my-feature-dag
 
@@ -47,6 +53,11 @@ python3 scripts/task_manager.py graph my-feature-dag
 python3 scripts/task_manager.py log my-feature implementation "build failed at step X"
 python3 scripts/task_manager.py history my-feature implementation
 python3 scripts/task_manager.py reset my-feature implementation --keep-task
+python3 scripts/task_manager.py retry my-feature implementation   # 智能重试：保留任务上下文与日志
+
+# 截止时间与超时追踪
+python3 scripts/task_manager.py set-deadline my-feature implementation "2026-03-20T18:00:00Z"
+python3 scripts/task_manager.py check-timeout my-feature
 
 # 可观测性
 python3 scripts/task_manager.py events my-feature --limit 20
@@ -59,6 +70,11 @@ python3 scripts/task_manager.py gate my-feature
 python3 scripts/task_manager.py leader-report my-feature
 python3 scripts/task_manager.py export my-feature -f md -o ./my-feature.report.md
 python3 scripts/task_manager.py export my-feature -f json -o ./my-feature.report.json
+
+# 自动创建 PR（需安装 GitHub CLI：https://cli.github.com/）
+python3 scripts/task_manager.py create-pr my-feature --dry-run          # 预览模式
+python3 scripts/task_manager.py create-pr my-feature --title "feat: ..." --base main
+python3 scripts/task_manager.py create-pr my-feature --draft             # 草稿 PR
 
 # 飞书 OpenAPI 发送适配器
 python3 scripts/feishu_openapi_adapter.py send-text --receive-id oc_xxx --text "Leader update" --dry-run
@@ -90,6 +106,7 @@ product-planner -> orchestration -> architecture -> implementation -> qa -> docu
 - `log`：为阶段记录排障日志
 - `history`：查看阶段状态变更与日志历史
 - `reset`：将单阶段或全流程重置为 pending 以重试
+- `retry`：智能重试——保留任务描述与日志（推荐用于失败阶段）
 
 可观测性命令：
 
@@ -97,12 +114,18 @@ product-planner -> orchestration -> architecture -> implementation -> qa -> docu
 - `stats`：汇总运行统计（尝试次数、失败次数、重置次数、日志数）
 - `blocked`：定位阻塞阶段及依赖阻塞原因
 
+截止时间与超时命令：
+
+- `set-deadline`：为阶段设置 ISO-8601 截止时间
+- `check-timeout`：报告已超过截止时间且未完成的阶段
+
 交付命令：
 
 - `doctor`：执行项目状态健康检查
 - `gate`：检查交付门禁（必须满足 QA + Documentation）
 - `leader-report`：生成面向 Leader 的进展与阻塞摘要
 - `export`：导出 Markdown 或 JSON 报告
+- `create-pr`：检查交付门禁并通过 `gh pr create` 自动创建 GitHub PR（需安装 [GitHub CLI](https://cli.github.com/)）
 
 飞书适配器：
 
@@ -167,12 +190,15 @@ openclaw-team-agent/
 │   ├── feishu_openapi_adapter.py
 │   └── feishu_inbound_bridge.py
 └── docs/                  # 参考文档
+    ├── examples/
+    │   └── login-flow.md  # 端到端示例流程
     └── glossary/
         └── terms.zh-en.md
 ```
 
 ## 版本策略
 
-- v0.1: 角色与治理规则落地（当前）
+- v0.1: 角色与治理规则落地
 - v0.2: 增补场景化流程（需求到发布）
 - v0.3: 引入自动化校验脚本（可选）
+- v0.4: QA 门禁强制执行、自动创建 PR、截止时间追踪、智能重试、术语表扩充、示例项目

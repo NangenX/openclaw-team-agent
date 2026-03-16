@@ -65,6 +65,8 @@ regression_scope:
   - 需要回归测试的模块1
 risks:
   - 剩余风险1
+gate_decision: pass/block
+gate_rationale: 通过/阻塞原因（必填）
 ```
 
 ### 代码审查清单
@@ -89,3 +91,4 @@ approval: approve/request_changes
 - 所有缺陷必须有明确的严重级别
 - 阻塞项必须提供替代方案
 - 审查意见必须具体且可执行
+- **QA 是发布前唯一的质量门禁**：未经 QA pass，Documentation 阶段不得推进

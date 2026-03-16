@@ -16,6 +16,8 @@ metadata:
 
 为当前项目安装 OpenClaw 6-Agent AI 开发团队，并提供一个最小可用的多 Agent 编排脚本（线性 + DAG）。
 
+**当前版本：v0.4**
+
 **本 skill 完全自包含**，所有 Agent 配置已内嵌在此文件中，安装时无需依赖任何外部仓库路径。
 配套的编排脚本位于 `scripts/task_manager.py`，用于管理 6-Agent 线性与 DAG 开发流程。
 
@@ -59,7 +61,7 @@ python3 scripts/task_manager.py status my-feature
 # DAG mode
 python3 scripts/task_manager.py init my-feature-dag -m dag -g "Build login flow"
 python3 scripts/task_manager.py add my-feature-dag spec -a product-planner --desc "Write requirement card"
-python3 scripts/task_manager.py add my-feature-dag impl -a implementation -d spec --desc "Implement"
+python3 scripts/task_manager.py add my-feature-dag impl -a implementation -d spec --desc "Implement" --deadline "2026-03-20T18:00:00Z" --token-budget 16000
 python3 scripts/task_manager.py ready my-feature-dag --json
 python3 scripts/task_manager.py graph my-feature-dag
 
@@ -67,6 +69,11 @@ python3 scripts/task_manager.py graph my-feature-dag
 python3 scripts/task_manager.py log my-feature implementation "build failed at step X"
 python3 scripts/task_manager.py history my-feature implementation
 python3 scripts/task_manager.py reset my-feature implementation --keep-task
+python3 scripts/task_manager.py retry my-feature implementation   # smart retry: keeps task + logs
+
+# Deadline & timeout tracking
+python3 scripts/task_manager.py set-deadline my-feature implementation "2026-03-20T18:00:00Z"
+python3 scripts/task_manager.py check-timeout my-feature
 
 # Observability
 python3 scripts/task_manager.py events my-feature --limit 20
@@ -79,6 +86,11 @@ python3 scripts/task_manager.py gate my-feature
 python3 scripts/task_manager.py leader-report my-feature
 python3 scripts/task_manager.py export my-feature -f md -o ./my-feature.report.md
 python3 scripts/task_manager.py export my-feature -f json -o ./my-feature.report.json
+
+# Auto PR creation (requires GitHub CLI: https://cli.github.com/)
+python3 scripts/task_manager.py create-pr my-feature --dry-run
+python3 scripts/task_manager.py create-pr my-feature --title "feat: ..." --base main
+python3 scripts/task_manager.py create-pr my-feature --draft
 
 # Feishu OpenAPI adapter
 python3 scripts/feishu_openapi_adapter.py send-text --receive-id oc_xxx --text "Leader update" --dry-run
@@ -110,6 +122,12 @@ product-planner -> orchestration -> architecture -> implementation -> qa -> docu
 - `log`：记录阶段排障日志。
 - `history`：查看阶段状态与日志历史。
 - `reset`：重置单阶段或全流程到 pending，支持失败后重试。
+- `retry`：智能重试——保留任务描述与日志，推荐用于失败阶段。
+
+截止时间与超时命令：
+
+- `set-deadline`：为阶段设置 ISO-8601 截止时间。
+- `check-timeout`：报告已超过截止时间且未完成的阶段。
 
 可观测性命令：
 
@@ -123,6 +141,7 @@ product-planner -> orchestration -> architecture -> implementation -> qa -> docu
 - `gate`：检查交付门禁（QA + Documentation）。
 - `leader-report`：生成 Leader 汇报文本（含阻塞项）。
 - `export`：导出 Markdown 或 JSON 报告文件。
+- `create-pr`：检查交付门禁并通过 `gh pr create` 自动创建 GitHub PR（需安装 GitHub CLI）。
 
 飞书适配器：
 
@@ -272,20 +291,34 @@ plan_id: PLAN-XXX
 requirement_id: REQ-XXX
 execution_strategy:
   approach: sequential/parallel/hybrid
+  max_parallel_agents: N
 routing:
   - agent: Architecture Agent
     task: 架构设计
     input: [需求卡片]
     output: [ADR文档]
-    deadline: YYYY-MM-DD
+    deadline: YYYY-MM-DDThh:mm:ssZ
+    token_budget: 8000
   - agent: Implementation Agent
     task: 代码实现
     depends_on: [Architecture Agent]
     input: [ADR文档]
     output: [代码变更]
+    token_budget: 16000
+context_strategy:
+  always_load:
+    - 需求卡片
+    - ADR（架构决策记录）
+  on_demand:
+    - 完整代码库（按需加载具体文件）
+  max_context_tokens: 40000
 escalation:
   condition: 阻塞/超时/失败
   to: [升级目标角色]
+handoff_checklist:
+  - 验收标准已明确
+  - 上游产出物已存档
+  - 下游 Agent 已收到完整上下文
 \`\`\`
 
 ## 协作协议
@@ -431,6 +464,14 @@ testing:
 known_risks:
   - 风险描述1
 breaking_changes: []
+handoff_context:
+  summary: 本次变更的一句话摘要
+  key_decisions:
+    - 重要技术决策1
+  qa_focus_areas:
+    - 需要 QA 重点验证的区域1
+  environment_setup:
+    - 运行/测试所需的环境步骤1
 \`\`\`
 
 ## 协作协议
@@ -498,6 +539,7 @@ summary:
   total_cases: N
   passed: N
   failed: N
+  skipped: N
   coverage: X%
 defects:
   - id: BUG-XXX
@@ -506,12 +548,15 @@ defects:
     suggestion: 修复建议
 regression_scope:
   - 需要回归测试的模块
+gate_decision: pass/block
+gate_rationale: 通过/阻塞原因（必填）
 \`\`\`
 
 ## 协作协议
 - 所有缺陷必须有明确的严重级别
 - 阻塞项必须提供替代方案
 - 审查意见必须具体且可执行
+- **QA 是发布前唯一的质量门禁**：未经 QA pass，Documentation 阶段不得推进
 ```
 
 ---
